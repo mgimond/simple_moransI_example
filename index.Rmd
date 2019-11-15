@@ -1,0 +1,278 @@
+---
+title: "A basic introduction to Moran's I analysis in R"
+author: "Manny Gimond"
+output:
+  html_document:
+    toc: yes
+    css: Tutorial.css
+    highlight: haddock
+    toc_float: 
+      collapsed: false
+  word_document: default
+  editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning = FALSE, comment = NA)
+```
+
+-----------------
+
+> This is a standalone tutorial used in one of my courses. It introduces students to the Moran's I analysis as well as some basic mapping features using `tmap`. This exercise also compares ArcMap's Moran's I results to those from a Monte Carlo simulation. For an overview of Moran's I, see my [lecture notes](https://mgimond.github.io/Spatial/spatial-autocorrelation.html).
+
+We will make use of the following packages: `sf` for importing the shapefiles, `tmap` for creating choropleth maps and `spdep` for implementing the Moran's I analysis. 
+
+```{r}
+library(sf)
+library(spdep)
+library(tmap)
+```
+
+
+## Loading and exploring the data
+
+The following chunk loads the data (as an `sf` object) from the github site.
+
+```{r results='hide'}
+# Load the shapefile
+s <- readRDS(url("https://github.com/mgimond/Data/raw/gh-pages/Exercises/nhme.rds"))
+```
+
+If you want to load a shapefile from a local directory, simply use the `read_sf()` function as in
+
+```{r eval=FALSE}
+# Only run this chunk if you are loading a local shapefile
+s <- st_read( "NHME.shp")
+```
+
+To list the column names associated with the object's attribute table, type:
+
+```{r}
+names(s)
+```
+
+To list the contents of an attribute, affix the dollar sign `$` to the object name followed by the attribute name. For example, to list the income values, type:
+
+```{r}
+s$Income
+```
+
+The Moran's I statistic is not robust to outliers or strongly skewed datasets. It's therefore good practice to check the distribution of the attribute values. You can plot the attribute values as follows:
+
+```{r, fig.height=2, fig.width=3, echo=2}
+OP <- par(mar = c(4,4,1,1))
+hist(s$Income, main=NULL)
+par(OP)
+```
+
+or,
+```{r, fig.height=1.3, fig.width=3, echo=2}
+OP <- par(mar = c(2,1,0,1))
+boxplot(s$Income, horizontal = TRUE)
+par(OP)
+```
+
+Other than one outlier, the dataset seems to be well behaved. We'll forgo any re-expression of the values going forward. 
+
+To symbolize the polygons using the `Income` attribute we will first define the classification breaks (`style = quantile` with `n = 8` breaks) and the symbol colors (`palette="Greens"`). For the latter, the `tmap` package makes use of Cynthia Brewer's color schemes (see her [website](http://colorbrewer2.org/)). 
+
+```{r fig.height=3}
+tm_shape(s) + tm_fill(col="Income", style="quantile", n=8, palette="Greens") +
+              tm_legend(outside=TRUE)
+```
+
+## Moran's I analysis
+
+### Step 1: Define neighboring polygons
+
+The first step in a Moran's I analysis requires that we define "neighboring" polygons. This could refer to contiguous polygons, polygons within a certain distance, or it could be non-spatial in nature and defined by social, political or cultural "neighbors".
+
+Here, we'll adopt a contiguous neighbor definition. We'll accept any contiguous polygons that share at least one vertex; this is the "queen" case (if one chooses to adopt the chess analogy) and it's  parameterized as `queen = TRUE` in the call to `poly2nb`. If we required that just *edges* be shared between polygons then we would set `queen = FALSE` (the *rook* analogy).
+
+```{r}
+nb <- poly2nb(s, queen=TRUE)
+```
+
+For each polygon in our shape object, `nb` lists all neighboring polygons. For example, to see the neighbors (by ID number) for the first polygon in the shape object, type:
+
+```{r}
+nb[1]
+```
+
+Here's the list of county names and associated IDs:
+
+```{r echo=FALSE}
+library(kableExtra)
+knitr::kable(data.frame(County=s$NAME, ID=1:nrow(s)), "html") %>% scroll_box(width = "200px", height = "200px")  
+
+```
+
+### Step 2: Assign weights to the neighbors
+
+Next, we need to assign weights to each neighboring polygon. In this example, each neighboring polygon will be assigned **equal weight** when computing the neighboring mean income values.
+
+```{r}
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+```
+
+To see the weight of the first polygon's neighbors type:
+```{r}
+lw$weights[1]
+```
+
+These are the weights each neighboring income value will be multiplied by before being summed. If a polygon has 5 neighbors, each neighbor will have a weight of 1/5 or 0.2. This weight will then be used to compute the mean neighbor values as in `0.2(neighbor1) + 0.2(neighbor2) + 0.2(neighbor3) + 0.2(neighbor4) + 0.2(neighbor5)`. This is equivalent to summing all five income values then dividing by 5.
+
+### Step 3 (optional): Compute the (weighted) neighbor mean income values 
+
+> NOTE: This step does not need to be performed when running the `moran` or `moran.test` functions outlined in Steps 4 and 5. This step is only needed if you wish to generate a scatter plot between the income values and their lagged counterpart.
+
+Next, we'll have R compute the average neighbor income value for each polygon. These values are often referred to as **spatially lagged** values.
+
+```{r}
+inc.lag <- lag.listw(lw, s$Income)
+inc.lag
+```
+
+You can plot the relationship between income and its spatially lagged counterpart as follows. The fitted blue line added to the plot is the result of an [OLS regression model](https://mgimond.github.io/Stats-in-R/regression.html#2_the_bivariate_regression_model).
+
+```{r fig.height=2.5,  fig.width = 2.5, echo=2:4}
+OP <- par(pty="s", mar=c(3.5,3.7,0,1))
+plot(inc.lag ~ s$Income, pch=16, asp=1)
+M1 <- lm(inc.lag ~ s$Income)
+abline(M1, col="blue")
+par(OP)
+```
+
+The slope of the line is the Moran's I coefficient. You can extract its value from the model object `M1` as follows:
+
+```{r}
+coef(M1)[2]
+```
+
+The moran's I coefficient is `r round(coef(M1)[2],2)`. The positive (upward) slope suggests that as the income value of a said polygon increases, so does those of its neighboring polygons. If the slope were negative (i.e. sloping downward), this would suggest a negative relationship whereby increasing values in a said polygon would be surrounded by polygons with decreasing income values.
+
+### Step 4: Computing the Moran's I statistic
+
+The Moran's I statistic can be computed using the `moran` function. 
+
+```{r}
+I <- moran(s$Income, lw, length(nb), Szero(lw))[1]
+I
+```
+
+Recall that the Moran's `I` value is the slope of the line that best fits the relationship between neighboring income values and each polygon's income in the dataset.
+
+
+### Step 5: Performing a hypothesis test
+
+The hypothesis we are testing states that _"the income values are randomly distributed across counties following a completely random process"_. There are two methods to testing this hypothesis: an **analytical method** and a **Monte Carlo** method. We'll explore both approaches in the following examples.
+
+#### Analytical method
+
+To run the Moran's I analysis using the analytical method, use the `moran.test` function. 
+
+```{r}
+moran.test(s$Income,lw, alternative="greater")
+```
+
+The Moran's I statistic is `r round(moran.test(s$Income,lw)$estimate[1],3)` (same value that was computed using the `moran` function, as expected). The p-value is very small. Usually, when the p-value is very small it's common practice to report it as `< 0.001`. 
+
+Note that ArcMap adopts this analytical approach to its hypothesis test however, it implements a **two-sided** test as opposed to the **one-sided** test adopted in the above example (i.e. `alternative = "greater"`). A two-sided p-value is nothing more than twice the one-sided p-value. Unfortunately, ArcMap does not seem to make this important distinction in any of its documentation. This distinction can have important ramifications as shown in the next example (Florida crime data). Fortunately, the income data is so strongly clustered that both a one-sided and two-sided test produce the same outcome (a p-value close to 0).
+
+#### Monte Carlo method
+
+The analytical approach to the Moran's I analysis benefits from being fast. But it may be sensitive to irregularly distributed polygons. A safer approach to hypothesis testing is to run an MC simulation using the `moran.mc()` function. The `moran.mc` function takes an extra argument `n`, the number of simulations.
+
+```{r}
+MC<- moran.mc(s$Income, lw, nsim=999, alternative="greater")
+
+# View results (including p-value)
+MC
+```
+
+The MC simulation generates a very small p-value, `r MC$p.value`. This is not surprising given that the income values are strongly clustered. We can see the results graphically by passing the Moran's I model to the plot function:
+
+```{r fig.height=3}
+# Plot the Null distribution (note that this is a density plot instead of a histogram)
+plot(MC)
+```
+
+The curve shows the distribution of Moran I values we could expect had the incomes been randomly distributed across the counties. Note that our observed statistic, `r round(moran.test(s$Income,lw)$estimate[1],3)`, falls way to the right of the distribution suggesting that the income values are clustered (a positive Moran's I value suggests clustering whereas a negative Moran's I value suggests dispersion).
+
+Now, had the Moran's I statistic been negative (suggesting a dispersed pattern), you would probably want to set the `alternative` argument to `less` thus giving you the fraction of simulated `I` values more dispersed than your observed `I` value.
+
+A visual exercise that you can perform to assess how "typical" or "atypical" your pattern may be relative to a randomly distributed pattern is to plot your observed pattern alongside a few simulated patterns generated under the null hypothesis.
+
+
+```{r fig.height=2, fig.width=7}
+set.seed(131)
+s$rand1 <- sample(s$Income, length(s$Income), replace = FALSE)
+s$rand2 <- sample(s$Income, length(s$Income), replace = FALSE)
+s$rand3 <- sample(s$Income, length(s$Income), replace = FALSE)
+
+tm_shape(s) + tm_fill(col=c("Income", "rand1", "rand2", "rand3"),
+                      style="quantile", n=8, palette="Greens", legend.show = FALSE) +
+              tm_facets( nrow=1)
+              
+```
+
+Can you tell the difference between our observed income distribution and those generated from a completely random process? The map on the left is our observed distribution. The three maps on the right are realizations of a completely random process.
+
+
+## Another example: Florida 1980 Homicide rate example
+
+In this example, we explore the spatial distribution of 1980 homicide rates `HR80` by county for the state of Florida using the Monte Carlo approach. 
+
+```{r fig.height=3, echo=FALSE, message=FALSE, results='hide'}
+# Load the shapefile
+s <- readRDS(url("https://github.com/mgimond/Data/raw/gh-pages/Exercises/fl_hr80.rds"))
+
+# Plot the data
+tm_shape(s) + tm_fill( col="HR80", style="quantile", n=8,
+                       palette="Reds") +
+              tm_legend(outside=TRUE)
+```
+
+The following code chunk highlights the entire workflow. Here, we'll set the number of simulations to `9999`.
+
+```{r fig.height=2.5, message=FALSE, warning=FALSE,results='hide', fig.show='hold'}
+set.seed(2354)
+# Load the shapefile
+s <- readRDS(url("https://github.com/mgimond/Data/raw/gh-pages/Exercises/fl_hr80.rds"))
+
+# Define the neighbors (use queen case)
+nb <- poly2nb(s, queen=TRUE)
+
+# Compute the neighboring average homicide rates
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+
+# Run the MC simulation version of the Moran's I test
+M1 <- moran.mc(s$HR80, lw, nsim=9999, alternative="greater")
+
+# Plot the results
+plot(M1)
+
+# Display the resulting statistics
+M1
+```
+
+```{r echo=FALSE}
+M1
+```
+
+
+The MC simulation generated a p-value of ~0.04 suggesting that there would be a ~4% chance of being wrong in rejecting the null hypothesis or that there is a ~4% chance that our observed pattern is consistent with a random process (note that your simulated p-value may differ from the one shown here--the number of simulations may need to be increased to reach a more stable convergence). Recall that this is a one-sided test. ArcMap's analytical solution adopts a two-sided test. To compare its p-value to ours, we need to divide its p-value by 2 (i.e. `0.0588 / 2`) which gives us a one-sided p-value of `0.0294`--about 25% smaller than our simulated p-value.
+
+```{r fig.width=5, fig.height=5,echo=FALSE}
+library(png)
+library(grid)
+img <- readPNG("img/HR80_arcmap_output.PNG")
+ grid.raster(img)
+```
+
+The wording adopted by ArcMap (version 10.6) under the infographic (highlighted in yellow in the above figure) is unfortunate. It seems to suggest a one-sided test by explicitly describing the nature of the pattern (i.e. *clustered*). A more appropriate statement would have been  _"There is less than a 6% likelihood that the observed pattern could be the result of random chance"_ (note the omission of the word _clustered_).
+
+-----
+
+![Copyleft](http://i.creativecommons.org/l/by-sa/4.0/88x31.png) Manuel Gimond, 2019
